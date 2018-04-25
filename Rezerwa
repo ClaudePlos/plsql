@@ -1,0 +1,192 @@
+declare
+p_okres varchar2(7);
+vDokId number;
+vKsId number;
+v_knt_id number;
+vSeg1 varchar2(3);
+vSeg3 varchar2(2);
+vSeg4 varchar2(3);
+v5rezerwa varchar2(50);
+begin
+p_okres := to_char(:na_dzien,'YYYY-MM');
+for frm in ( 
+select distinct eat_firmy.frm_id frm_id, frm_nazwa, frm_kl_id kl_kod
+from knt_umowy, knt_dane_umow, knt_pozycje_umow, eat_firmy
+, nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
+where dum_um_id = knt_umowy.um_id
+and um_rum_kod = 'UZ_USLUGI'
+and knt_umowy.um_id = akc.um_id
+and akc.id = poz_akc.AKC_ID
+and pum_dum_id = dum_id
+and knt_pozycje_umow.pum_id = poz_akc.pum_id
+and um_kl_kod = frm_kl_id
+and dum_data_zmiany <= :na_dzien
+and nvl(dum_aktualne_do, sysdate) >= :na_dzien
+and pum_cena != 0 
+and eat_firmy.frm_id not in (1)
+and eat_firmy.frm_id in (300047) -- tylko logisyka na testy
+)
+loop
+-- change consolidation for frm_id
+begin
+eap_globals.USTAW_firme(frm.frm_id);
+eap_globals.USTAW_konsolidacje('N');
+end;
+-- generation PK
+vDokId := egint.inp_api_dokumenty_nz.pk_wstaw(
+            NULL,
+            to_date(p_okres,'YYYY-MM'), --vDokDataPK
+            to_date(p_okres,'YYYY-MM'), --vDokDataKsPk
+            'PLN', --waluta
+             1, --kurs
+            'PK',
+            'REZERWA KOSZTY '||P_OKRES,
+            NULL, 
+            to_date(p_okres,'YYYY-MM'),  --vDokDataKsPk,
+            NULL -- p_def_0 IN VARCHAR2 DEFAULT NULL,
+            );
+--
+    for rek in (    
+       select * from (
+            select --* 
+            frm_nazwa, knt_umowy.um_id, um_numer, tow_nazwa, um_kl_kod, pum_prt_kod, pum_cena, poz_akc.opis, poz_akc.pum_id
+            , poz_akc.kwota poz_akc_kwota, akc.kwota akc_kwota
+            , pum_ilosc, lower(rodzaj_kosztu) rodzaj_kosztu, substr(rodzaj_kosztu,0,2) rodz1, substr(rodzaj_kosztu,4,3) rodz2, poz_akc.status,
+            (select sk_kod from css_stanowiska_kosztow where sk_id = ta_sk_id) sk_kod
+            from knt_umowy, knt_dane_umow, knt_pozycje_umow, css_towary, eat_firmy
+            , nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
+            where dum_um_id = knt_umowy.um_id
+            and um_rum_kod = 'UZ_USLUGI'
+            and knt_umowy.um_id = akc.um_id
+            and akc.id = poz_akc.AKC_ID
+            and pum_dum_id = dum_id
+            and pum_tow_id = tow_id
+            and knt_pozycje_umow.pum_id = poz_akc.pum_id
+            and um_kl_kod = frm_kl_id
+            and dum_data_zmiany <= :na_dzien
+            and nvl(dum_aktualne_do, sysdate) >= :na_dzien
+            and eat_firmy.frm_id = frm.frm_id
+            )
+            where pum_cena != 0 --sk_kod = 'C204' --and tow_nazwa = 'UNP_DZIERŻAWA_POMIESZCZEŃ'
+            order by frm_nazwa, sk_kod, tow_nazwa, rodzaj_kosztu
+    )
+    loop
+    begin
+        select wap_wartosc into vSeg1
+         from css_wartosci_pol, css_stanowiska_kosztow 
+        where wap_id = sk_wap_id 
+         and sk_kod = rek.sk_kod
+         and wap_dep_id = 100026;
+        exception when others then
+          RAISE_APPLICATION_ERROR(-20001, 'Nie moge odszukac 5 dla: '||rek.pum_prt_kod );
+        end;
+      
+      -- dictionares, TODO put this to Egeria      
+      v5rezerwa := vSeg1||'-'||rek.sk_kod||'-REZ-'||rek.rodzaj_kosztu;  
+     
+     -- check account no 5 
+     BEGIN
+      SELECT knt_id
+      INTO v_knt_id
+      FROM kg_konta
+      WHERE knt_rp_rok = substr(p_okres,0,4)
+      AND knt_pelny_numer = v5rezerwa; 
+    EXCEPTION WHEN NO_DATA_FOUND THEN
+      -- tworzę konto  
+      nzp_tymczasowo.kasuj('PAR_KONT');
+      kgp_knt.ustaw_rok(substr(p_okres,0,4));
+      kgp_knt.ustaw('OBIEKT', rek.sk_kod); 
+      kgp_knt.ustaw('NOŚNIK KOSZTÓW','REZ'); 
+      kgp_knt.ustaw('KOSZT_RODZ', rek.rodz1);  
+      kgp_knt.ustaw('RODZAJ_KOSZTU', lower(rek.rodz2)); 
+      -- wstawiam konto
+      v_knt_id := kgp_knt.konto(vSeg1||'-OBIEKT-NOŚNIK KOSZTÓW-KOSZT_RODZ-RODZAJ_KOSZTU');      
+    END;
+        
+    -- check account no 844-02
+     BEGIN
+      SELECT knt_id
+      INTO v_knt_id
+      FROM kg_konta
+      WHERE knt_rp_rok = substr(p_okres,0,4)
+      AND knt_pelny_numer = '844-02-'||rek.sk_kod; 
+    EXCEPTION WHEN NO_DATA_FOUND THEN
+      -- create account  
+      nzp_tymczasowo.kasuj('PAR_KONT');
+      kgp_knt.ustaw_rok(substr(p_okres,0,4));
+      kgp_knt.ustaw('OBIEKT', rek.sk_kod); 
+      -- add account
+      v_knt_id := kgp_knt.konto('844-02-OBIEKT');      
+    END;
+    --   
+      vKsId := egint.inp_api_dokumenty_nz.dekret_wstaw(rek.pum_cena, v5rezerwa, '844-02-'||rek.sk_kod, 'Rezerwa na koszty;UmId:'||rek.um_id||';UmNum:'||rek.um_numer, vDokId );
+    end loop;
+update kgt_dokumenty set dok_f_rozrachunkowy = 'N' where dok_id = vDokId;   
+dbms_output.put_line ( frm.frm_nazwa||' dok_id:'||vDokId);       
+end loop;
+end;
+
+
+
+commit
+
+
+-- sprawdzenie 
+select * from (
+select --* 
+frm_nazwa, knt_umowy.um_id, um_numer, tow_nazwa, um_kl_kod, pum_prt_kod, pum_cena, poz_akc.opis, poz_akc.pum_id
+, poz_akc.kwota poz_akc_kwota, akc.kwota akc_kwota
+, pum_ilosc, lower(rodzaj_kosztu) rodzaj_kosztu, substr(rodzaj_kosztu,0,2) rodz1, substr(rodzaj_kosztu,4,3) rodz2, poz_akc.status,
+(select sk_kod from css_stanowiska_kosztow where sk_id = ta_sk_id) sk_kod
+from knt_umowy, knt_dane_umow, knt_pozycje_umow, css_towary, eat_firmy
+, nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
+where dum_um_id = knt_umowy.um_id
+and um_rum_kod = 'UZ_USLUGI'
+and knt_umowy.um_id = akc.um_id
+and akc.id = poz_akc.AKC_ID
+and pum_dum_id = dum_id
+and pum_tow_id = tow_id
+and knt_pozycje_umow.pum_id = poz_akc.pum_id
+and um_kl_kod = frm_kl_id
+and dum_data_zmiany <= :na_dzien
+and nvl(dum_aktualne_do, sysdate) >= :na_dzien
+)
+where pum_cena != 0 --sk_kod = 'C204' --and tow_nazwa = 'UNP_DZIERŻAWA_POMIESZCZEŃ'
+order by frm_nazwa, sk_kod, tow_nazwa, rodzaj_kosztu
+
+
+
+
+select * from nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
+where akc.id = poz_akc.AKC_ID
+and um_id = 131367
+
+
+select * from nzap_akceptacje where um_id = 133603
+
+select * from nzap_pozycje_akceptacji where akc_id = 1274189
+
+
+select * from css_stanowiska_kosztow where sk_id = 113971
+
+
+
+
+-- zapytanie czy sa ilosci 
+
+
+
+select distinct eat_firmy.frm_id frm_id, frm_nazwa, frm_kl_id kl_kod
+from knt_umowy, knt_dane_umow, knt_pozycje_umow, eat_firmy
+, nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
+where dum_um_id = knt_umowy.um_id
+and um_rum_kod = 'UZ_USLUGI'
+and knt_umowy.um_id = akc.um_id
+and akc.id = poz_akc.AKC_ID
+and pum_dum_id = dum_id
+and knt_pozycje_umow.pum_id = poz_akc.pum_id
+and um_kl_kod = frm_kl_id
+and dum_data_zmiany <= :na_dzien
+and nvl(dum_aktualne_do, sysdate) >= :na_dzien
+and pum_cena != 0 
+and eat_firmy.frm_id not in (1)
