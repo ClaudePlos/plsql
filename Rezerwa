@@ -23,8 +23,7 @@ and um_kl_kod = frm_kl_id
 and dum_data_zmiany <= :na_dzien
 and nvl(dum_aktualne_do, sysdate) >= :na_dzien
 and pum_cena != 0 
-and eat_firmy.frm_id not in (1)
-and eat_firmy.frm_id in (300047) -- tylko logisyka na testy
+and eat_firmy.frm_id not in (1,300047) -- bez SI i Logistyki
 )
 loop
 -- change consolidation for frm_id
@@ -44,9 +43,9 @@ vDokId := egint.inp_api_dokumenty_nz.pk_wstaw(
             NULL, 
             to_date(p_okres,'YYYY-MM'),  --vDokDataKsPk,
             NULL -- p_def_0 IN VARCHAR2 DEFAULT NULL,
-            );
+            );                     
 --
-    for rek in (    
+    for rek in (       
        select * from (
             select --* 
             frm_nazwa, knt_umowy.um_id, um_numer, tow_nazwa, um_kl_kod, pum_prt_kod, pum_cena, poz_akc.opis, poz_akc.pum_id
@@ -66,9 +65,30 @@ vDokId := egint.inp_api_dokumenty_nz.pk_wstaw(
             and dum_data_zmiany <= :na_dzien
             and nvl(dum_aktualne_do, sysdate) >= :na_dzien
             and eat_firmy.frm_id = frm.frm_id
+            union all
+            select --*  -- ta czesc to rozbicie z logistyki, bo logustyka nie ma kosztow i trzeba rezerwe w innych frm dac
+            eat_firmy_dla_logistyki.frm_id frm_nazwa, knt_umowy.um_id, um_numer, tow_nazwa, um_kl_kod, pum_prt_kod, pum_cena, poz_akc.opis, poz_akc.pum_id
+            , poz_akc.kwota poz_akc_kwota, akc.kwota akc_kwota
+            , pum_ilosc, lower(rodzaj_kosztu) rodzaj_kosztu, substr(rodzaj_kosztu,0,2) rodz1, substr(rodzaj_kosztu,4,3) rodz2, poz_akc.status,
+            (select sk_kod from css_stanowiska_kosztow where sk_id = ta_sk_id) sk_kod
+            from knt_umowy, knt_dane_umow, knt_pozycje_umow, css_towary
+            , (select wsl_alias frm_id, wsl_wartosc sk_kod from css_wartosci_slownikow where wsl_sl_nazwa = 'NAP_KLASYFIKACJA_SK_VAT_000002') eat_firmy_dla_logistyki
+            , nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
+            where dum_um_id = knt_umowy.um_id
+            and um_rum_kod = 'UZ_USLUGI'
+            and knt_umowy.um_id = akc.um_id
+            and akc.id = poz_akc.AKC_ID
+            and pum_dum_id = dum_id
+            and pum_tow_id = tow_id
+            and knt_pozycje_umow.pum_id = poz_akc.pum_id
+            and um_kl_kod = '5900'
+            and dum_data_zmiany <= :na_dzien
+            and nvl(dum_aktualne_do, sysdate) >= :na_dzien
+            and eat_firmy_dla_logistyki.sk_kod = (select sk_kod from css_stanowiska_kosztow where sk_id = ta_sk_id)
+            and eat_firmy_dla_logistyki.frm_id = frm.frm_id 
             )
             where pum_cena != 0 --sk_kod = 'C204' --and tow_nazwa = 'UNP_DZIERŻAWA_POMIESZCZEŃ'
-            order by frm_nazwa, sk_kod, tow_nazwa, rodzaj_kosztu
+            order by frm_nazwa, sk_kod, tow_nazwa, rodzaj_kosztu          
     )
     loop
     begin
@@ -124,6 +144,16 @@ vDokId := egint.inp_api_dokumenty_nz.pk_wstaw(
 update kgt_dokumenty set dok_f_rozrachunkowy = 'N' where dok_id = vDokId;   
 dbms_output.put_line ( frm.frm_nazwa||' dok_id:'||vDokId);       
 end loop;
+
+ELSE -- dla logistyki inaczej
+
+
+
+END IF; 
+
+
+
+
 end;
 
 
@@ -169,13 +199,37 @@ select * from nzap_pozycje_akceptacji where akc_id = 1274189
 
 select * from css_stanowiska_kosztow where sk_id = 113971
 
+eat_firmy
+
+-- dla logustyki
+select * from (
+select --* 
+eat_firmy_dla_logistyki.frm_id frm_nazwa, knt_umowy.um_id, um_numer, tow_nazwa, um_kl_kod, pum_prt_kod, pum_cena, poz_akc.opis, poz_akc.pum_id
+, poz_akc.kwota poz_akc_kwota, akc.kwota akc_kwota
+, pum_ilosc, lower(rodzaj_kosztu) rodzaj_kosztu, substr(rodzaj_kosztu,0,2) rodz1, substr(rodzaj_kosztu,4,3) rodz2, poz_akc.status,
+(select sk_kod from css_stanowiska_kosztow where sk_id = ta_sk_id) sk_kod
+from knt_umowy, knt_dane_umow, knt_pozycje_umow, css_towary
+, (select wsl_alias frm_id, wsl_wartosc sk_kod from css_wartosci_slownikow where wsl_sl_nazwa = 'NAP_KLASYFIKACJA_SK_VAT_000002') eat_firmy_dla_logistyki
+, nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
+where dum_um_id = knt_umowy.um_id
+and um_rum_kod = 'UZ_USLUGI'
+and knt_umowy.um_id = akc.um_id
+and akc.id = poz_akc.AKC_ID
+and pum_dum_id = dum_id
+and pum_tow_id = tow_id
+and knt_pozycje_umow.pum_id = poz_akc.pum_id
+and um_kl_kod = '5900'
+and dum_data_zmiany <= :na_dzien
+and nvl(dum_aktualne_do, sysdate) >= :na_dzien
+and eat_firmy_dla_logistyki.sk_kod = (select sk_kod from css_stanowiska_kosztow where sk_id = ta_sk_id)
+and eat_firmy_dla_logistyki.frm_id = 
+)
+where pum_cena != 0 --sk_kod = 'C204' --and tow_nazwa = 'UNP_DZIERŻAWA_POMIESZCZEŃ'
+order by frm_nazwa, sk_kod, tow_nazwa, rodzaj_kosztu
 
 
 
 -- zapytanie czy sa ilosci 
-
-
-
 select distinct eat_firmy.frm_id frm_id, frm_nazwa, frm_kl_id kl_kod
 from knt_umowy, knt_dane_umow, knt_pozycje_umow, eat_firmy
 , nzap_akceptacje akc, nzap_pozycje_akceptacji poz_akc
@@ -190,3 +244,6 @@ and dum_data_zmiany <= :na_dzien
 and nvl(dum_aktualne_do, sysdate) >= :na_dzien
 and pum_cena != 0 
 and eat_firmy.frm_id not in (1)
+
+
+
